@@ -1,0 +1,924 @@
+// MainActivity.kt
+// Entry point of the application, handles UI and basic user interactions.
+package com.example.etekcityscalereader
+
+import android.Manifest
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothManager
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.launch
+
+// Data class to represent a weight measurement
+data class WeightData(
+    val timestamp: Long,
+    val weight: Double,
+    val unit: String,
+    val isStable: Boolean
+)
+
+class MainActivity : ComponentActivity() {
+
+    // Activity result launcher for enabling Bluetooth
+    private val requestEnableBluetooth =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == RESULT_OK) {
+                // Bluetooth is enabled, you can now proceed with BLE operations
+                // Potentially trigger a scan from ViewModel here if that's the flow
+                // viewModel.startScan() // Example
+            } else {
+                // User did not enable Bluetooth or an error occurred
+                // Handle this appropriately (e.g., show a message)
+            }
+        }
+
+    // Activity result launcher for requesting permissions
+    private val requestPermissionsLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+            var allPermissionsGranted = true
+            permissions.entries.forEach {
+                if (!it.value) {
+                    allPermissionsGranted = false
+                }
+            }
+            if (allPermissionsGranted) {
+                // All permissions granted, proceed with BLE operations
+                // viewModel.startScan() // Example
+            } else {
+                // Not all permissions were granted.
+                // Inform the user that the app needs these permissions to function.
+            }
+        }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            EtekcityScaleAppTheme {
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    ScaleControlScreen()
+                }
+            }
+        }
+        // Initial check for permissions and Bluetooth state
+        checkPermissionsAndBluetooth()
+    }
+
+    private fun checkPermissionsAndBluetooth() {
+        val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT
+            )
+        } else {
+            arrayOf(
+                Manifest.permission.BLUETOOTH,
+                Manifest.permission.BLUETOOTH_ADMIN,
+                Manifest.permission.ACCESS_FINE_LOCATION // Required for BLE scan pre-Android 12
+            )
+        }
+
+        val missingPermissions = requiredPermissions.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (missingPermissions.isNotEmpty()) {
+            requestPermissionsLauncher.launch(missingPermissions.toTypedArray())
+        } else {
+            // Permissions are already granted, check Bluetooth state
+            ensureBluetoothEnabled()
+        }
+    }
+
+    private fun ensureBluetoothEnabled() {
+        val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
+
+        if (bluetoothAdapter == null) {
+            // Device does not support Bluetooth
+            // Handle this error (e.g., show a message and disable BLE features)
+            return
+        }
+
+        if (!bluetoothAdapter.isEnabled) {
+            val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+            requestEnableBluetooth.launch(enableBtIntent)
+        } else {
+            // Bluetooth is enabled and permissions are granted.
+            // App is ready for BLE operations.
+            // You might want to notify your ViewModel or start scanning.
+        }
+    }
+}
+
+@Composable
+fun ScaleControlScreen(bleViewModel: BleViewModel = viewModel()) {
+    val context = LocalContext.current
+    val connectionStatus by bleViewModel.connectionStatus.collectAsState()
+    val weightMeasurement by bleViewModel.latestWeight.collectAsState()
+    val scanStatus by bleViewModel.isScanning.collectAsState()
+    val coroutineScope = rememberCoroutineScope()
+
+    // Function to request permissions (re-check)
+    val requestPermissionsAgainLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { permissions ->
+            var allGranted = true
+            permissions.entries.forEach { if (!it.value) allGranted = false }
+            if (allGranted) {
+                bleViewModel.startScan(context)
+            } else {
+                // Show a message that permissions are needed
+                coroutineScope.launch {
+                   // Show snackbar or dialog
+                }
+            }
+        }
+    
+    // Function to enable Bluetooth (re-check)
+     val requestEnableBluetoothAgainLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            if (result.resultCode == ComponentActivity.RESULT_OK) {
+                bleViewModel.startScan(context)
+            } else {
+                // Show a message that Bluetooth is needed
+                 coroutineScope.launch {
+                   // Show snackbar or dialog
+                }
+            }
+        }
+
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text("Etekcity Scale Reader", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Text("Status: $connectionStatus")
+        Spacer(modifier = Modifier.height(8.dp))
+
+        if (weightMeasurement != null) {
+            Text(
+                "Weight: ${weightMeasurement!!.weight} ${weightMeasurement!!.unit}",
+                style = MaterialTheme.typography.titleLarge
+            )
+            Text(
+                "Stable: ${weightMeasurement!!.isStable}",
+                style = MaterialTheme.typography.bodySmall
+            )
+        } else {
+            Text("Weight: --.--", style = MaterialTheme.typography.titleLarge)
+        }
+        Spacer(modifier = Modifier.height(24.dp))
+
+        Button(
+            onClick = {
+                // Check permissions and Bluetooth before scanning
+                val requiredPermissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+                } else {
+                    arrayOf(Manifest.permission.BLUETOOTH, Manifest.permission.BLUETOOTH_ADMIN, Manifest.permission.ACCESS_FINE_LOCATION)
+                }
+                val allPermissionsGranted = requiredPermissions.all {
+                    ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+                }
+
+                if (!allPermissionsGranted) {
+                    requestPermissionsAgainLauncher.launch(requiredPermissions)
+                    return@Button
+                }
+
+                val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+                val bluetoothAdapter: BluetoothAdapter? = bluetoothManager.adapter
+                if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
+                    val enableBtIntent = Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)
+                    requestEnableBluetoothAgainLauncher.launch(enableBtIntent)
+                    return@Button
+                }
+                
+                // If all checks pass:
+                if (scanStatus) {
+                    bleViewModel.stopScan()
+                } else {
+                    bleViewModel.startScan(context.applicationContext)
+                }
+            },
+            enabled = true // Could be disabled based on state, e.g. if already connected
+        ) {
+            Text(if (scanStatus) "Stop Scan" else "Start Scan for Scale")
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        if (scanStatus) {
+            CircularProgressIndicator()
+        }
+
+        // Placeholder for listing discovered devices or connection controls
+        // LazyColumn { /* items(discoveredDevices) { ... } */ }
+    }
+}
+
+// BleViewModel.kt
+// Manages BLE interaction logic and exposes state to the UI.
+package com.example.etekcityscalereader
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.bluetooth.*
+import android.bluetooth.le.ScanCallback
+import android.bluetooth.le.ScanFilter
+import android.bluetooth.le.ScanResult
+import android.bluetooth.le.ScanSettings
+import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.ParcelUuid
+import android.util.Log
+import androidx.core.app.ActivityCompat
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import java.util.*
+
+// --- Constants based on Metaplan Phase 1 (Hypothesized/To Be Confirmed) ---
+// These UUIDs are based on common Etekcity patterns (e.g., ESN00 model)
+// and need to be verified for ESB4074C during actual BLE sniffing.
+const val ETEKCITY_PRIMARY_SERVICE_UUID_STR = "0000fff0-0000-1000-8000-00805f9b34fb" // Hypothesized: FFF0
+val ETEKCITY_PRIMARY_SERVICE_UUID: UUID = UUID.fromString(ETEKCITY_PRIMARY_SERVICE_UUID_STR)
+
+const val ETEKCITY_WEIGHT_CHARACTERISTIC_UUID_STR = "0000fff1-0000-1000-8000-00805f9b34fb" // Hypothesized: FFF1 (Notify)
+val ETEKCITY_WEIGHT_CHARACTERISTIC_UUID: UUID = UUID.fromString(ETEKCITY_WEIGHT_CHARACTERISTIC_UUID_STR)
+
+// Standard CCCD UUID for enabling notifications/indications
+const val CCCD_UUID_STR = "00002902-0000-1000-8000-00805f9b34fb"
+val CCCD_UUID: UUID = UUID.fromString(CCCD_UUID_STR)
+
+// Example device name to filter for (confirm with nRF Connect)
+const val TARGET_DEVICE_NAME = "Etekcity" // Or "ESB4074C", "Smart Scale", etc.
+
+class BleViewModel : ViewModel() {
+
+    private val _connectionStatus = MutableStateFlow("Disconnected")
+    val connectionStatus: StateFlow<String> = _connectionStatus
+
+    private val _latestWeight = MutableStateFlow<WeightData?>(null)
+    val latestWeight: StateFlow<WeightData?> = _latestWeight
+
+    private val _isScanning = MutableStateFlow(false)
+    val isScanning: StateFlow<Boolean> = _isScanning
+
+    private var bluetoothGatt: BluetoothGatt? = null
+    private var bluetoothDevice: BluetoothDevice? = null
+
+    // BluetoothAdapter handling
+    private fun getBluetoothAdapter(context: Context): BluetoothAdapter? {
+        val bluetoothManager = context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
+        return bluetoothManager.adapter
+    }
+
+    // --- Scanning Logic ---
+    private val scanCallback = object : ScanCallback() {
+        override fun onScanResult(callbackType: Int, result: ScanResult) {
+            super.onScanResult(callbackType, result)
+            // Check permissions before accessing result.device
+            // Although we check before starting scan, it's good practice
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                 if (ActivityCompat.checkSelfPermission(
+                        getApplicationContextForScan(), // Requires a valid context
+                        Manifest.permission.BLUETOOTH_CONNECT
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    Log.e("BleViewModel", "BLUETOOTH_CONNECT permission missing for onScanResult")
+                    return
+                }
+            }
+            // Check if the device name contains the target name (case-insensitive)
+            // Or filter by service UUID if advertised
+            if (result.device.name?.contains(TARGET_DEVICE_NAME, ignoreCase = true) == true) {
+                Log.i("BleViewModel", "Target device found: ${result.device.name} (${result.device.address})")
+                stopScan() // Stop scanning once target is found
+                connectToDevice(getApplicationContextForScan(), result.device)
+            } else {
+                 Log.d("BleViewModel", "Scanned device: ${result.device.name ?: "Unknown"} (${result.device.address})")
+            }
+        }
+
+        override fun onBatchScanResults(results: MutableList<ScanResult>?) {
+            super.onBatchScanResults(results)
+            Log.d("BleViewModel", "Batch scan results: ${results?.size}")
+        }
+
+        override fun onScanFailed(errorCode: Int) {
+            super.onScanFailed(errorCode)
+            Log.e("BleViewModel", "Scan failed with error code: $errorCode")
+            _isScanning.value = false
+            _connectionStatus.value = "Scan Failed: $errorCode"
+        }
+    }
+    
+    // Hacky way to get context for scan callback, ideally pass context more elegantly
+    // or use a dedicated service for BLE.
+    @SuppressLint("StaticFieldLeak")
+    private var applicationContextForScan: Context? = null
+
+
+    @SuppressLint("MissingPermission") // Permissions checked before calling
+    fun startScan(context: Context) {
+        applicationContextForScan = context.applicationContext // Store context
+        val bluetoothAdapter = getBluetoothAdapter(context)
+        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled) {
+            _connectionStatus.value = "Bluetooth not enabled"
+            Log.e("BleViewModel", "Bluetooth adapter not available or not enabled.")
+            return
+        }
+
+        // Check for BLUETOOTH_SCAN permission specifically for scanning
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                _connectionStatus.value = "Scan permission missing"
+                Log.e("BleViewModel", "BLUETOOTH_SCAN permission not granted.")
+                return
+            }
+        } else { // For older versions, ACCESS_FINE_LOCATION is often tied to scanning
+             if (ActivityCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                _connectionStatus.value = "Location permission for scan missing"
+                Log.e("BleViewModel", "ACCESS_FINE_LOCATION permission not granted for scanning (pre-Android S).")
+                // return // Depending on strictness, you might allow scan without it but it might fail
+            }
+        }
+
+
+        if (_isScanning.value) {
+            Log.d("BleViewModel", "Scan already in progress.")
+            return
+        }
+
+        // Define scan filters - e.g., by service UUID or device name
+        val scanFilters = mutableListOf<ScanFilter>()
+        // Example: Filter by primary service UUID if it's advertised by the scale
+        // val serviceFilter = ScanFilter.Builder()
+        //    .setServiceUuid(ParcelUuid(ETEKCITY_PRIMARY_SERVICE_UUID))
+        //    .build()
+        // scanFilters.add(serviceFilter)
+
+        // Example: Filter by device name (less reliable as name can change or be null)
+         val nameFilter = ScanFilter.Builder()
+             .setDeviceName(null) // Set to null to catch devices with and without names, then filter in onScanResult
+             .build()
+         scanFilters.add(nameFilter)
+
+
+        val scanSettings = ScanSettings.Builder()
+            .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY) // Or other modes like BALANCED
+            .build()
+
+        bluetoothAdapter.bluetoothLeScanner.startScan(scanFilters, scanSettings, scanCallback)
+        _isScanning.value = true
+        _connectionStatus.value = "Scanning..."
+        Log.i("BleViewModel", "BLE scan started.")
+
+        // Stop scan after a timeout period to save battery
+        viewModelScope.launch {
+            delay(30000) // 30 seconds scan timeout
+            if (_isScanning.value) {
+                Log.i("BleViewModel", "Scan timeout reached. Stopping scan.")
+                stopScan()
+                if (_connectionStatus.value == "Scanning...") {
+                     _connectionStatus.value = "Scan timed out. Device not found."
+                }
+            }
+        }
+    }
+
+    @SuppressLint("MissingPermission") // Permissions checked before calling
+    fun stopScan() {
+         val bluetoothAdapter = getBluetoothAdapter(getApplicationContextForScan() ?: return) // Need context
+        if (bluetoothAdapter == null || !_isScanning.value) return
+
+        // Check for BLUETOOTH_SCAN permission specifically for stopping scan
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ActivityCompat.checkSelfPermission(getApplicationContextForScan()!!, Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED) {
+                 Log.e("BleViewModel", "BLUETOOTH_SCAN permission not granted for stopping scan.")
+                // Even if permission is missing, try to stop scan to prevent battery drain,
+                // but log the error. The system might prevent it.
+            }
+        }
+
+        bluetoothAdapter.bluetoothLeScanner.stopScan(scanCallback)
+        _isScanning.value = false
+        Log.i("BleViewModel", "BLE scan stopped.")
+        if (_connectionStatus.value == "Scanning...") { // If still scanning when explicitly stopped
+            _connectionStatus.value = "Scan Stopped"
+        }
+    }
+
+    // --- Connection Logic ---
+    @SuppressLint("MissingPermission") // Permissions checked before calling
+    private fun connectToDevice(context: Context, device: BluetoothDevice) {
+        _connectionStatus.value = "Connecting to ${device.name ?: device.address}..."
+        bluetoothDevice = device
+        // Ensure BLUETOOTH_CONNECT permission
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ActivityCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                _connectionStatus.value = "Connect permission missing"
+                Log.e("BleViewModel", "BLUETOOTH_CONNECT permission missing for connectToDevice")
+                return
+            }
+        }
+        bluetoothGatt = device.connectGatt(context, false, gattCallback) // autoConnect = false for faster initial connection
+    }
+
+    fun disconnect() {
+        bluetoothGatt?.let { gatt ->
+             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (ActivityCompat.checkSelfPermission(getApplicationContextForScan()!!, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                     Log.e("BleViewModel", "BLUETOOTH_CONNECT permission missing for disconnect.")
+                    // Attempt to close anyway, but log the issue.
+                }
+            }
+            gatt.disconnect()
+            // gatt.close() // Close should be called in onConnectionStateChange after disconnection
+        }
+    }
+    
+    private fun closeGatt() {
+        bluetoothGatt?.let { gatt ->
+             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (ActivityCompat.checkSelfPermission(getApplicationContextForScan()!!, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                    Log.e("BleViewModel", "BLUETOOTH_CONNECT permission missing for gatt.close().")
+                }
+            }
+            gatt.close()
+            bluetoothGatt = null
+            Log.i("BleViewModel", "BluetoothGatt closed.")
+        }
+    }
+
+
+    // --- GATT Callback ---
+    private val gattCallback = object : BluetoothGattCallback() {
+        @SuppressLint("MissingPermission") // Permissions checked before calling
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            val deviceAddress = gatt.device.address
+            val deviceName = gatt.device.name ?: "Unknown Device"
+
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    Log.i("BleViewModel", "Successfully connected to $deviceName ($deviceAddress)")
+                    _connectionStatus.value = "Connected to $deviceName"
+                    bluetoothGatt = gatt // Store the gatt instance
+                    // Discover services
+                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        if (ActivityCompat.checkSelfPermission(getApplicationContextForScan()!!, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                            Log.e("BleViewModel", "BLUETOOTH_CONNECT permission missing for discoverServices.")
+                             _connectionStatus.value = "Error: Connect permission needed for service discovery"
+                            disconnect() // Disconnect if we can't proceed
+                            return
+                        }
+                    }
+                    gatt.discoverServices()
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    Log.i("BleViewModel", "Disconnected from $deviceName ($deviceAddress)")
+                    _connectionStatus.value = "Disconnected"
+                    _latestWeight.value = null // Clear weight on disconnect
+                    closeGatt() // Clean up resources
+                }
+            } else {
+                Log.e("BleViewModel", "Connection state change error for $deviceName ($deviceAddress): $status")
+                _connectionStatus.value = "Connection Error: $status"
+                _latestWeight.value = null
+                closeGatt() // Clean up resources on error
+            }
+        }
+
+        @SuppressLint("MissingPermission") // Permissions checked before calling
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                Log.i("BleViewModel", "Services discovered for ${gatt.device.name}")
+                _connectionStatus.value = "Services Discovered"
+
+                val service = gatt.getService(ETEKCITY_PRIMARY_SERVICE_UUID)
+                if (service == null) {
+                    Log.e("BleViewModel", "Etekcity primary service (${ETEKCITY_PRIMARY_SERVICE_UUID_STR}) not found.")
+                    _connectionStatus.value = "Scale service not found"
+                    disconnect()
+                    return
+                }
+
+                val characteristic = service.getCharacteristic(ETEKCITY_WEIGHT_CHARACTERISTIC_UUID)
+                if (characteristic == null) {
+                    Log.e("BleViewModel", "Etekcity weight characteristic (${ETEKCITY_WEIGHT_CHARACTERISTIC_UUID_STR}) not found.")
+                    _connectionStatus.value = "Weight characteristic not found"
+                    disconnect()
+                    return
+                }
+                
+                // Check for BLUETOOTH_CONNECT permission before setCharacteristicNotification
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    if (ActivityCompat.checkSelfPermission(getApplicationContextForScan()!!, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                        Log.e("BleViewModel", "BLUETOOTH_CONNECT permission missing for setCharacteristicNotification.")
+                         _connectionStatus.value = "Error: Connect permission for notifications"
+                        disconnect()
+                        return
+                    }
+                }
+
+                // Enable notifications for the characteristic
+                gatt.setCharacteristicNotification(characteristic, true)
+
+                // Write to the CCCD to enable notifications on the peripheral
+                val descriptor = characteristic.getDescriptor(CCCD_UUID)
+                if (descriptor == null) {
+                    Log.e("BleViewModel", "CCCD (${CCCD_UUID_STR}) not found for weight characteristic.")
+                     _connectionStatus.value = "CCCD not found"
+                    disconnect()
+                    return
+                }
+                
+                // For Android 13+ (API 33), writeDescriptor requires BLUETOOTH_CONNECT
+                // For older versions, it's covered by BLUETOOTH or BLUETOOTH_ADMIN
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) { // API 33
+                     if (ActivityCompat.checkSelfPermission(getApplicationContextForScan()!!, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                         Log.e("BleViewModel", "BLUETOOTH_CONNECT permission missing for writeDescriptor (API 33+).")
+                         _connectionStatus.value = "Error: Connect permission for descriptor write"
+                         disconnect()
+                         return
+                     }
+                    // For API 33+, use the new method with write type
+                    val writeStatus = gatt.writeDescriptor(descriptor, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE)
+                    Log.d("BleViewModel", "writeDescriptor (API 33+) status: $writeStatus")
+
+                } else { // Pre-API 33
+                    descriptor.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+                    @Suppress("DEPRECATION") // Deprecated in API 33
+                    val success = gatt.writeDescriptor(descriptor)
+                    if (!success) {
+                        Log.e("BleViewModel", "Failed to write CCCD descriptor value (pre-API 33).")
+                        _connectionStatus.value = "Failed to enable notifications (CCCD write)"
+                        disconnect()
+                    } else {
+                         Log.i("BleViewModel", "CCCD descriptor write initiated (pre-API 33).")
+                    }
+                }
+
+            } else {
+                Log.e("BleViewModel", "Service discovery failed with status: $status")
+                _connectionStatus.value = "Service Discovery Failed: $status"
+                disconnect()
+            }
+        }
+        
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) {
+            super.onDescriptorWrite(gatt, descriptor, status)
+            if (descriptor.uuid == CCCD_UUID) {
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    Log.i("BleViewModel", "Successfully enabled notifications for ${descriptor.characteristic.uuid}")
+                    _connectionStatus.value = "Receiving Weight Data..."
+                } else {
+                    Log.e("BleViewModel", "Failed to write CCCD descriptor, status: $status")
+                    _connectionStatus.value = "Notification Enable Failed: $status"
+                    disconnect()
+                }
+            }
+        }
+
+
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            // This is deprecated in API 33. Use onCharacteristicChanged(gatt, characteristic, value) instead.
+            // However, for broader compatibility, we might need to handle both or check API level.
+            // For now, using the deprecated one for simplicity as it's often still called.
+            handleCharacteristicChanged(characteristic.uuid, characteristic.value)
+        }
+
+        // Override for API 33+ if needed, though the above often still works.
+        // override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+        //    super.onCharacteristicChanged(gatt, characteristic, value)
+        //    handleCharacteristicChanged(characteristic.uuid, value)
+        // }
+
+        private fun handleCharacteristicChanged(uuid: UUID, data: ByteArray?) {
+            if (uuid == ETEKCITY_WEIGHT_CHARACTERISTIC_UUID) {
+                if (data != null) {
+                    Log.d("BleViewModel", "Weight data received: ${data.joinToString { "%02X".format(it) }}")
+                    parseWeightData(data)
+                }
+            }
+        }
+    }
+
+    // --- Data Parsing Logic (Hypothetical based on Metaplan Table 2) ---
+    private fun parseWeightData(data: ByteArray) {
+        // This parsing logic is HIGHLY HYPOTHETICAL and needs to be confirmed
+        // by actual BLE sniffing of the ESB4074C scale as per Metaplan Phase 1.D.
+        // The ESN00 (nutrition scale) protocol [9] is used as a starting point.
+
+        if (data.size < 17) { // Assuming 17-byte structure from ESN00
+            Log.w("BleViewModel", "Received data packet too short: ${data.size} bytes. Expected ~17.")
+            return
+        }
+
+        // Example: Byte 16 for stability (0x01 = stable)
+        val isStableByte = data.getOrNull(16)?.toInt() ?: 0
+        val isStable = isStableByte == 0x01
+
+        // Example: Bytes 11-12 for weight (little-endian uint16)
+        // And byte 10 for sign (0x00 = positive)
+        // And byte 14 for unit (e.g., 0x00=oz, 0x01=ml, 0x02=g, 0x03=lb:oz, 0x04=fl:oz)
+        // For ESB4074C, units are likely lb, kg, st. This mapping needs to be found.
+        // Let's assume weight is in grams if byte 14 is 0x02, or pounds if 0x05 (hypothetical)
+        // and needs scaling.
+
+        val weightRaw = (data.getOrNull(11)?.toUByte()?.toInt() ?: 0) +
+                        ((data.getOrNull(12)?.toUByte()?.toInt() ?: 0) shl 8)
+
+        val unitByte = data.getOrNull(14)?.toInt() ?: 0
+        var weightKg = 0.0
+        var displayUnit = "kg" // Default
+
+        // VERY HYPOTHETICAL UNIT AND SCALING:
+        when (unitByte) {
+            0x00 -> { // Assuming this means Kilograms, scaled by 100 (e.g., 7530 -> 75.30 kg)
+                weightKg = weightRaw / 100.0
+                displayUnit = "kg"
+            }
+            0x01 -> { // Assuming this means Pounds, scaled by 100 (e.g., 16532 -> 165.32 lb)
+                weightKg = weightRaw / 100.0 * 0.453592 // Convert lbs to kg for internal consistency
+                displayUnit = "lb"
+            }
+            // Add cases for 'st' if the scale supports it and the byte code is found.
+            // Example: 0x02 for stone (would need to handle lb part too)
+            else -> {
+                Log.w("BleViewModel", "Unknown unit byte: 0x${unitByte.toString(16)}. Assuming raw value or default unit.")
+                // Fallback or error handling:
+                weightKg = weightRaw / 100.0 // Default assumption: scaled by 100
+                displayUnit = "?? (${unitByte.toString(16)})"
+            }
+        }
+        
+        // If display unit is lb, show the original lb value before conversion to kg
+        val displayWeight = if (displayUnit == "lb") weightRaw / 100.0 else weightKg
+
+
+        val newWeightData = WeightData(
+            timestamp = System.currentTimeMillis(),
+            weight = String.format(Locale.US, "%.2f", displayWeight).toDouble(), // Format to 2 decimal places
+            unit = displayUnit,
+            isStable = isStable
+        )
+
+        _latestWeight.value = newWeightData
+        Log.i("BleViewModel", "Parsed: Weight=${newWeightData.weight} ${newWeightData.unit}, Stable=${newWeightData.isStable}")
+
+        // Here you would also trigger saving to Room database if isStable is true
+        // e.g., weighInRepository.insert(newWeightData.toWeighInEntity())
+    }
+
+
+    override fun onCleared() {
+        super.onCleared()
+        Log.i("BleViewModel", "ViewModel cleared. Disconnecting and closing GATT.")
+        disconnect() // Ensure GATT is disconnected
+        // Explicitly close GATT here if not already closed by disconnect's callback chain
+        if (bluetoothGatt != null) {
+           closeGatt()
+        }
+    }
+}
+
+
+// Theme.kt (Standard Jetpack Compose Theme file - usually generated)
+package com.example.etekcityscalereader.ui.theme
+
+import android.app.Activity
+import android.os.Build
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+
+private val DarkColorScheme = darkColorScheme(
+    primary = Purple80,
+    secondary = PurpleGrey80,
+    tertiary = Pink80
+)
+
+private val LightColorScheme = lightColorScheme(
+    primary = Purple40,
+    secondary = PurpleGrey40,
+    tertiary = Pink40
+)
+
+@Composable
+fun EtekcityScaleAppTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    dynamicColor: Boolean = true,
+    content: @Composable () -> Unit
+) {
+    val colorScheme = when {
+        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+            val context = LocalContext.current
+            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        }
+        darkTheme -> DarkColorScheme
+        else -> LightColorScheme
+    }
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            val window = (view.context as Activity).window
+            window.statusBarColor = colorScheme.primary.toArgb()
+            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = darkTheme
+        }
+    }
+
+    MaterialTheme(
+        colorScheme = colorScheme,
+        typography = Typography,
+        content = content
+    )
+}
+
+// Color.kt (Standard Jetpack Compose Color file)
+package com.example.etekcityscalereader.ui.theme
+
+import androidx.compose.ui.graphics.Color
+
+val Purple80 = Color(0xFFD0BCFF)
+val PurpleGrey80 = Color(0xFFCCC2DC)
+val Pink80 = Color(0xFFEFB8C8)
+
+val Purple40 = Color(0xFF6650a4)
+val PurpleGrey40 = Color(0xFF625b71)
+val Pink40 = Color(0xFF7D5260)
+
+
+// Typography.kt (Standard Jetpack Compose Typography file)
+package com.example.etekcityscalereader.ui.theme
+
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+
+val Typography = Typography(
+    bodyLarge = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Normal,
+        fontSize = 16.sp,
+        lineHeight = 24.sp,
+        letterSpacing = 0.5.sp
+    )
+)
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="[http://schemas.android.com/apk/res/android](http://schemas.android.com/apk/res/android)"
+    xmlns:tools="[http://schemas.android.com/tools](http://schemas.android.com/tools)">
+
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+
+    <!--
+        Location permission is required for BLE scanning on Android versions
+        prior to Android 12 (API 31), even if the app doesn't use location directly.
+        For Android 12+, BLUETOOTH_SCAN with `usesPermissionFlags="neverForLocation"`
+        can be used if location is not needed.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30"/>
+    <!--
+        For apps targeting Android 10 (API 29) or higher, ACCESS_BACKGROUND_LOCATION
+        might be needed if scanning in the background. For this example, foreground scanning is assumed.
+    -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" />
+
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="true"/>
+
+
+    <application
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.EtekcityScaleReader"
+        tools:targetApi="31">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/Theme.EtekcityScaleReader">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
+```xml
+// Add these to your dependencies block in app-level build.gradle.kts or build.gradle
+
+// For build.gradle.kts (Kotlin DSL)
+// dependencies {
+//    implementation("androidx.core:core-ktx:1.12.0") // Or latest
+//    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0") // Or latest
+//    implementation("androidx.activity:activity-compose:1.9.0") // Or latest
+//    implementation(platform("androidx.compose:compose-bom:2024.05.00")) // Or latest BOM
+//    implementation("androidx.compose.ui:ui")
+//    implementation("androidx.compose.ui:ui-graphics")
+//    implementation("androidx.compose.ui:ui-tooling-preview")
+//    implementation("androidx.compose.material3:material3")
+//
+//    // ViewModel Compose
+//    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0") // Or latest
+//
+//    // Room for database (add if you implement local storage)
+//    // implementation("androidx.room:room-runtime:2.6.1") // Or latest
+//    // annotationProcessor("androidx.room:room-compiler:2.6.1") // For Java
+//    // ksp("androidx.room:room-compiler:2.6.1") // For Kotlin (KSP)
+//    // implementation("androidx.room:room-ktx:2.6.1") // Kotlin Extensions for Room
+//
+//    // MPAndroidChart (add if you implement charting) - check latest version and setup
+//    // implementation("com.github.PhilJay:MPAndroidChart:v3.1.0")
+// }
+
+// For build.gradle (Groovy DSL)
+// dependencies {
+//    implementation 'androidx.core:core-ktx:1.12.0' // Or latest
+//    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.7.0' // Or latest
+//    implementation 'androidx.activity:activity-compose:1.9.0' // Or latest
+//    implementation platform('androidx.compose:compose-bom:2024.05.00') // Or latest BOM
+//    implementation 'androidx.compose.ui:ui'
+//    implementation 'androidx.compose.ui:ui-graphics'
+//    implementation 'androidx.compose.ui:ui-tooling-preview'
+//    implementation 'androidx.compose.material3:material3'
+//
+//    // ViewModel Compose
+//    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0' // Or latest
+//
+//    // Room for database (add if you implement local storage)
+//    // implementation "androidx.room:room-runtime:2.6.1" // Or latest
+//    // annotationProcessor "androidx.room:room-compiler:2.6.1" // For Java
+//    // ksp "androidx.room:room-compiler:2.6.1" // For Kotlin (KSP)
+//    // implementation "androidx.room:room-ktx:2.6.1" // Kotlin Extensions for Room
+//
+//    // MPAndroidChart (add if you implement charting) - check latest version and setup
+//    // implementation 'com.github.PhilJay:MPAndroidChart:v3.1.0'
+// }
+
+// Ensure you have Kotlin configured, Jetpack Compose enabled, and KSP plugin if using Room with Kotlin.
+// android {
+//     ...
+//     buildFeatures {
+//         compose true
+//     }
+//     composeOptions {
+//         kotlinCompilerExtensionVersion '1.5.13' // Check compatible version with your Kotlin version
+//     }
+//     kotlinOptions {
+//         jvmTarget = '1.8' // Or higher
+//     }
+//     ...
+// }
+//
+// // If using KSP for Room:
+// plugins {
+//     id 'com.android.application'
+//     id 'org.jetbrains.kotlin.android'
+//     id 'com.google.devtools.ksp' version '1.9.23-1.0.20' // Check latest KSP version
+// }
